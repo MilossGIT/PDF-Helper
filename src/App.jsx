@@ -1,4 +1,3 @@
-// src/App.jsx
 import PDFViewer from './components/PDFViewer';
 
 function App() {
