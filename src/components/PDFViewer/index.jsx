@@ -10,120 +10,75 @@ import BookmarkDialog from './BookmarkDialog';
 pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
-const MAX_PREVIEW_PAGES = 5;
 
 const PDFViewer = () => {
     const [pdfs, setPdfs] = useState([]);
-    const [searchQuery, setSearchQuery] = useState('');
     const [currentPdf, setCurrentPdf] = useState(null);
     const [numPages, setNumPages] = useState(null);
-    const [expandedFiles, setExpandedFiles] = useState(new Set());
-    const [pdfContent, setPdfContent] = useState({});
-    const [searchResults, setSearchResults] = useState([]);
-    const [isListening, setIsListening] = useState(false);
-    const [bookmarks, setBookmarks] = useState({});
-    const [selectedPageNumber, setSelectedPageNumber] = useState(1);
+    const [error, setError] = useState(null);
+    const [loading, setLoading] = useState(false);
     const [activeTab, setActiveTab] = useState('files');
+    const [searchQuery, setSearchQuery] = useState('');
+    const [searchResults, setSearchResults] = useState([]);
+    const [expandedFiles, setExpandedFiles] = useState(new Set());
+    const [bookmarks, setBookmarks] = useState({});
     const [showBookmarkDialog, setShowBookmarkDialog] = useState(false);
     const [selectedText, setSelectedText] = useState('');
-    const [error, setError] = useState(null);
-
-    const cleanupUrls = useCallback((pdfList) => {
-        pdfList.forEach(pdf => {
-            if (pdf.url) {
-                URL.revokeObjectURL(pdf.url);
-            }
-        });
-    }, []);
-
-    const loadPdfs = useCallback(async () => {
-        try {
-            const savedFiles = await getFiles();
-            const pdfWithUrls = savedFiles.map(pdf => {
-                const blob = new Blob([new Uint8Array(pdf.data)], { type: 'application/pdf' });
-                return { ...pdf, url: URL.createObjectURL(blob) };
-            });
-            setPdfs(pdfWithUrls);
-        } catch (err) {
-            console.error('Error loading PDFs:', err);
-            setError('Failed to load PDFs');
-        }
-    }, []);
-
-    useEffect(() => {
-        loadPdfs();
-        return () => cleanupUrls(pdfs);
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-    // Cleanup URLs when pdfs change
-    useEffect(() => {
-        return () => cleanupUrls(pdfs);
-    }, [pdfs, cleanupUrls]);
-
-    const extractHeaders = async (pdf) => {
-        try {
-            const page = await pdf.getPage(1);
-            const textContent = await page.getTextContent();
-            return textContent.items
-                .filter(item => item.transform[3] > 12)
-                .map(item => item.str)
-                .slice(0, 20);
-        } catch (err) {
-            console.error('Error extracting headers:', err);
-            return [];
-        }
-    };
+    const [currentPage, setCurrentPage] = useState(1);
 
     const handleFileUpload = async (event) => {
         const files = Array.from(event.target.files);
+        setLoading(true);
+        setError(null);
 
         for (const file of files) {
             try {
-                if (file.size > MAX_FILE_SIZE) {
-                    setError(`File ${file.name} is too large (max 50MB)`);
+                // File validation
+                if (!file.type.includes('pdf')) {
+                    setError('Only PDF files are supported');
                     continue;
                 }
 
+                if (file.size > MAX_FILE_SIZE) {
+                    setError(`${file.name} is too large. Maximum size is 50MB`);
+                    continue;
+                }
+
+                // Read file
                 const arrayBuffer = await file.arrayBuffer();
-                const uint8Array = new Uint8Array(arrayBuffer);
-                const blob = new Blob([uint8Array], { type: 'application/pdf' });
+                const blob = new Blob([arrayBuffer], { type: 'application/pdf' });
                 const url = URL.createObjectURL(blob);
 
-                const pdfDoc = await pdfjs.getDocument(uint8Array).promise;
-                const headers = await extractHeaders(pdfDoc);
-
-                // Extract content for search
-                const content = {};
-                for (let i = 1; i <= Math.min(pdfDoc.numPages, MAX_PREVIEW_PAGES); i++) {
-                    const page = await pdfDoc.getPage(i);
-                    const textContent = await page.getTextContent();
-                    content[i] = textContent.items.map(item => item.str).join(' ');
-                }
+                // Process PDF
+                const pdfDoc = await pdfjs.getDocument(new Uint8Array(arrayBuffer.slice(0))).promise;
 
                 const newPdf = {
                     name: file.name,
                     data: arrayBuffer,
-                    headers,
                     timestamp: Date.now(),
                     url,
                     pageCount: pdfDoc.numPages
                 };
 
-                await saveFile(newPdf);
-                setPdfs(prev => [...prev, newPdf]);
-                setPdfContent(prev => ({
-                    ...prev,
-                    [newPdf.timestamp]: content
-                }));
+                // Save to IndexedDB
+                const success = await saveFile(newPdf);
+                if (success) {
+                    setPdfs(prev => [...prev, newPdf]);
+                    setError(null);
+                } else {
+                    throw new Error('Failed to save file');
+                }
 
             } catch (err) {
-                console.error(`Error processing ${file.name}:`, err);
-                setError(`Failed to process ${file.name}`);
+                console.error('Error uploading file:', err);
+                setError(`Failed to upload ${file.name}: ${err.message}`);
             }
         }
+
+        setLoading(false);
     };
 
-    const handleSearch = useCallback((query) => {
+    const handleSearch = useCallback(async (query) => {
         setSearchQuery(query);
         if (!query || !currentPdf) {
             setSearchResults([]);
@@ -131,28 +86,21 @@ const PDFViewer = () => {
         }
 
         try {
+            // Search current PDF
+            const pdfDoc = await pdfjs.getDocument(currentPdf.url).promise;
             const results = [];
-            const content = pdfContent[currentPdf.timestamp];
 
-            if (content) {
-                Object.entries(content).forEach(([pageNum, pageContent]) => {
-                    const searchRegex = new RegExp(query, 'gi');
-                    let match;
+            for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
+                const page = await pdfDoc.getPage(pageNum);
+                const textContent = await page.getTextContent();
+                const pageText = textContent.items.map(item => item.str).join(' ');
 
-                    while ((match = searchRegex.exec(pageContent)) !== null) {
-                        if (results.length >= 100) break;
-
-                        const start = Math.max(0, match.index - 40);
-                        const end = Math.min(pageContent.length, match.index + match[0].length + 40);
-
-                        results.push({
-                            pageNumber: parseInt(pageNum),
-                            text: match[0],
-                            context: pageContent.substring(start, end),
-                            index: match.index
-                        });
-                    }
-                });
+                if (pageText.toLowerCase().includes(query.toLowerCase())) {
+                    results.push({
+                        pageNumber: pageNum,
+                        text: pageText
+                    });
+                }
             }
 
             setSearchResults(results);
@@ -161,50 +109,38 @@ const PDFViewer = () => {
             }
         } catch (err) {
             console.error('Search error:', err);
-            setError('Search failed');
+            setError('Failed to search PDF');
         }
-    }, [currentPdf, pdfContent]);
-
-    const handleVoiceSearch = useCallback(() => {
-        if ('webkitSpeechRecognition' in window) {
-            const recognition = new window.webkitSpeechRecognition();
-            recognition.continuous = false;
-            recognition.interimResults = false;
-
-            recognition.onstart = () => setIsListening(true);
-            recognition.onend = () => setIsListening(false);
-            recognition.onresult = (event) => {
-                const transcript = event.results[0][0].transcript;
-                handleSearch(transcript);
-            };
-
-            recognition.start();
-        } else {
-            setError('Voice search is not supported in your browser');
-        }
-    }, [handleSearch]);
-
-    const addBookmark = useCallback((bookmark) => {
-        if (!currentPdf) return;
-        setBookmarks(prev => ({
-            ...prev,
-            [currentPdf.timestamp]: [
-                ...(prev[currentPdf.timestamp] || []),
-                { ...bookmark, timestamp: Date.now() }
-            ]
-        }));
-        setShowBookmarkDialog(false);
     }, [currentPdf]);
 
-    const removeBookmark = useCallback((bookmarkToRemove) => {
-        if (!currentPdf) return;
-        setBookmarks(prev => ({
-            ...prev,
-            [currentPdf.timestamp]: prev[currentPdf.timestamp]?.filter(
-                bookmark => bookmark.timestamp !== bookmarkToRemove.timestamp
-            )
-        }));
-    }, [currentPdf]);
+    // Load saved PDFs on mount
+    useEffect(() => {
+        const loadSavedPdfs = async () => {
+            try {
+                setLoading(true);
+                const savedFiles = await getFiles();
+                const pdfWithUrls = savedFiles.map(pdf => {
+                    const blob = new Blob([new Uint8Array(pdf.data)], { type: 'application/pdf' });
+                    return { ...pdf, url: URL.createObjectURL(blob) };
+                });
+                setPdfs(pdfWithUrls);
+            } catch (err) {
+                console.error('Error loading PDFs:', err);
+                setError('Failed to load saved PDFs');
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        loadSavedPdfs();
+
+        // Cleanup function
+        return () => {
+            pdfs.forEach(pdf => {
+                if (pdf.url) URL.revokeObjectURL(pdf.url);
+            });
+        };
+    }, []);
 
     const handleTextSelection = () => {
         const selection = window.getSelection();
@@ -218,14 +154,18 @@ const PDFViewer = () => {
     return (
         <div className="flex h-screen">
             <Sidebar
+                files={pdfs}
                 activeTab={activeTab}
                 onTabChange={setActiveTab}
-                searchQuery={searchQuery}
-                onSearch={handleSearch}
-                isListening={isListening}
-                onVoiceSearch={handleVoiceSearch}
+                selectedFile={currentPdf}
+                onFileSelect={setCurrentPdf}
                 onFileUpload={handleFileUpload}
-                files={pdfs}
+                searchQuery={searchQuery}
+                onSearch={setSearchQuery}
+                isLoading={loading}
+                error={error}
+                onErrorDismiss={() => setError(null)}
+                searchResults={searchResults}
                 expandedFiles={expandedFiles}
                 onFileToggle={(timestamp) => {
                     setExpandedFiles(prev => {
@@ -238,7 +178,6 @@ const PDFViewer = () => {
                         return newSet;
                     });
                 }}
-                onFileSelect={setCurrentPdf}
                 onFileDelete={async (pdf) => {
                     try {
                         await deleteFile(pdf.timestamp);
@@ -248,17 +187,10 @@ const PDFViewer = () => {
                             setCurrentPdf(null);
                         }
                     } catch (err) {
-                        setError('Failed to delete file');
+                        setError('Failed to delete PDF');
                     }
                 }}
-                selectedFile={currentPdf}
-                searchResults={searchResults}
                 bookmarks={bookmarks[currentPdf?.timestamp] || []}
-                onPageChange={setSelectedPageNumber}
-                onAddBookmark={addBookmark}
-                onDeleteBookmark={removeBookmark}
-                error={error}
-                onErrorDismiss={() => setError(null)}
             />
 
             <div
@@ -290,6 +222,9 @@ const PDFViewer = () => {
                                 renderTextLayer={true}
                                 renderAnnotationLayer={true}
                                 className="mb-4 shadow-lg rounded-lg bg-white"
+                                onLoadSuccess={() => {
+                                    if (index === 0) setCurrentPage(1);
+                                }}
                             />
                         ))}
                     </Document>
@@ -307,9 +242,21 @@ const PDFViewer = () => {
                     setShowBookmarkDialog(false);
                     setSelectedText('');
                 }}
-                onSave={addBookmark}
+                onSave={(bookmark) => {
+                    if (currentPdf) {
+                        setBookmarks(prev => ({
+                            ...prev,
+                            [currentPdf.timestamp]: [
+                                ...(prev[currentPdf.timestamp] || []),
+                                { ...bookmark, pageNumber: currentPage }
+                            ]
+                        }));
+                        setShowBookmarkDialog(false);
+                        setSelectedText('');
+                    }
+                }}
                 selectedText={selectedText}
-                pageNumber={selectedPageNumber}
+                pageNumber={currentPage}
             />
         </div>
     );
