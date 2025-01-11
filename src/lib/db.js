@@ -4,26 +4,8 @@ const DB_NAME = 'PDFHelperDB';
 const STORE_NAME = 'pdfs';
 const DB_VERSION = 1;
 
-const arrayBufferToString = (buffer) => {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-};
-
-const stringToArrayBuffer = (str) => {
-  const binaryString = atob(str);
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  return bytes.buffer;
-};
-
 export const createDB = async () => {
-  return openDB(DB_NAME, DB_VERSION, {
+  return await openDB(DB_NAME, DB_VERSION, {
     upgrade(db) {
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         db.createObjectStore(STORE_NAME, { keyPath: 'timestamp' });
@@ -36,7 +18,7 @@ export const saveFile = async (file) => {
   try {
     const fileToStore = {
       ...file,
-      data: arrayBufferToString(file.data),
+      data: file.data, // Store as ArrayBuffer directly
       bookmarks: file.bookmarks || [],
     };
 
@@ -55,11 +37,22 @@ export const getFiles = async () => {
     const files = await db.getAll(STORE_NAME);
     return files.map((file) => ({
       ...file,
-      data: stringToArrayBuffer(file.data),
+      data: file.data, // Return ArrayBuffer directly
     }));
   } catch (error) {
     console.error('Error getting files:', error);
     return [];
+  }
+};
+
+export const deleteFile = async (timestamp) => {
+  try {
+    const db = await createDB();
+    await db.delete(STORE_NAME, timestamp);
+    return true;
+  } catch (error) {
+    console.error('Error deleting file:', error);
+    return false;
   }
 };
 
@@ -75,17 +68,6 @@ export const updateBookmarks = async (timestamp, bookmarks) => {
     return false;
   } catch (error) {
     console.error('Error updating bookmarks:', error);
-    return false;
-  }
-};
-
-export const deleteFile = async (timestamp) => {
-  try {
-    const db = await createDB();
-    await db.delete(STORE_NAME, timestamp);
-    return true;
-  } catch (error) {
-    console.error('Error deleting file:', error);
     return false;
   }
 };

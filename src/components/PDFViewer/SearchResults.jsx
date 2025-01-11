@@ -1,47 +1,77 @@
-// src/components/PDFViewer/SearchResults.jsx
-import { BookmarkPlus } from 'lucide-react';
+import { Search } from 'lucide-react';
 
-const SearchResults = ({ results, onPageChange, onAddBookmark, searchQuery }) => {
-    if (!results || results.length === 0) return null;
+const SearchResults = ({ results = [], onSelect, searchQuery = '' }) => {
+    const handleResultClick = (result) => {
+        if (onSelect) {
+            onSelect({
+                pageNumber: result.pageNumber,
+                text: result.matches?.[0] || '',
+                matches: result.matches
+            });
+        }
+    };
+
+    if (!results.length) {
+        return (
+            <div className="flex flex-col items-center justify-center p-8 text-gray-500">
+                <Search className="h-8 w-8 mb-2 opacity-50" />
+                <p className="text-sm">
+                    {searchQuery
+                        ? 'No results found. Try a different search term.'
+                        : 'Enter a search term to find content in your PDFs.'}
+                </p>
+            </div>
+        );
+    }
+
+    const highlightText = (text, searchTerm) => {
+        if (!searchTerm || !text) return text;
+        try {
+            const escapedSearchTerm = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const parts = text.split(new RegExp(`(${escapedSearchTerm})`, 'gi'));
+            return (
+                <span>
+                    {parts.map((part, index) =>
+                        part.toLowerCase() === searchTerm.toLowerCase()
+                            ? <span key={index} className="bg-yellow-200 font-medium">{part}</span>
+                            : part
+                    )}
+                </span>
+            );
+        } catch (e) {
+            return text;
+        }
+    };
 
     return (
         <div className="space-y-2">
-            <h3 className="text-sm font-medium text-gray-500 mb-2">
-                Search Results ({results.length})
-            </h3>
-            <div className="space-y-2">
+            <div className="sticky top-0 bg-white z-10 p-2 border-b shadow-sm">
+                <div className="text-sm text-gray-500">
+                    Found {results.length} {results.length === 1 ? 'result' : 'results'}
+                </div>
+            </div>
+            <div className="space-y-3 p-2">
                 {results.map((result, index) => (
                     <div
-                        key={index}
-                        className="p-3 bg-white rounded-lg shadow-sm hover:bg-gray-50 cursor-pointer group"
-                        onClick={() => onPageChange(result.pageNumber)}
+                        key={`${result.pageNumber}-${index}`}
+                        onClick={() => handleResultClick(result)}
+                        className="bg-white rounded-lg p-3 shadow-sm hover:bg-gray-50 cursor-pointer transition-colors"
                     >
-                        <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
-                            <span>Page {result.pageNumber}</span>
-                            <button
-                                className="p-1 hover:bg-gray-100 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    onAddBookmark({
-                                        text: result.text,
-                                        pageNumber: result.pageNumber,
-                                        note: `Search result for: ${searchQuery}`
-                                    });
-                                }}
-                                title="Add bookmark"
-                            >
-                                <BookmarkPlus size={14} className="text-blue-500" />
-                            </button>
+                        <div className="flex items-center justify-between mb-2">
+                            <span className="text-sm font-medium text-blue-600">
+                                Page {result.pageNumber}
+                            </span>
+                            <span className="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded-full">
+                                {result.matchCount} {result.matchCount === 1 ? 'match' : 'matches'}
+                            </span>
                         </div>
-                        <div
-                            className="text-sm text-gray-700"
-                            dangerouslySetInnerHTML={{
-                                __html: result.context.replace(
-                                    new RegExp(searchQuery, 'gi'),
-                                    match => `<mark class="bg-yellow-200 rounded px-1">${match}</mark>`
-                                )
-                            }}
-                        />
+                        <div className="text-sm text-gray-700">
+                            {result.matches?.map((match, mIndex) => (
+                                <div key={mIndex} className="mb-1 last:mb-0">
+                                    {highlightText(match, searchQuery)}
+                                </div>
+                            ))}
+                        </div>
                     </div>
                 ))}
             </div>

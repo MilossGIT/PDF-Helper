@@ -104,3 +104,35 @@
 .pdf-container::-webkit-scrollbar-thumb:hover {
   background-color: #94a3b8;
 }
+
+.highlight-match {
+  animation: highlight-pulse 2s ease-in-out;
+  background-color: rgba(59, 130, 246, 0.2);
+  border-radius: 2px;
+}
+
+@keyframes highlight-pulse {
+  0% {
+    background-color: rgba(59, 130, 246, 0.5);
+  }
+  50% {
+    background-color: rgba(59, 130, 246, 0.2);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.pdf-page-container {
+  position: relative;
+  display: inline-block;
+}
+
+.bookmark-stamp {
+  transition: all 0.2s ease-in-out;
+}
+
+.bookmark-stamp:hover {
+  transform: scale(1.1);
+  filter: drop-shadow(0 0 4px rgba(59, 130, 246, 0.5));
+}
