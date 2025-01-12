@@ -26,7 +26,6 @@ const BookmarkDialog = ({
             text: selectedText,
             note: note.trim(),
             pageNumber,
-            timestamp: Date.now()
         });
         setNote('');
         setTitle('');

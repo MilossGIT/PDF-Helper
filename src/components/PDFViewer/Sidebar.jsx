@@ -67,7 +67,9 @@ const Sidebar = ({
     onFileToggle,
     onFileDelete,
     bookmarks = [],
-    onBookmarkDelete
+    onBookmarkDelete,
+    onSearchResultClick,
+    onBookmarkClick
 }) => {
     const [isListening, setIsListening] = useState(false);
 
@@ -86,6 +88,10 @@ const Sidebar = ({
 
             recognition.start();
         }
+    };
+
+    const handleTabChange = (tab) => {
+        onTabChange(tab);
     };
 
     return (
@@ -124,19 +130,19 @@ const Sidebar = ({
             <div className="flex border-b">
                 <Tab
                     isActive={activeTab === 'files'}
-                    onClick={() => onTabChange('files')}
+                    onClick={() => handleTabChange('files')}
                 >
                     Files
                 </Tab>
                 <Tab
                     isActive={activeTab === 'search'}
-                    onClick={() => onTabChange('search')}
+                    onClick={() => handleTabChange('search')}
                 >
                     Search
                 </Tab>
                 <Tab
                     isActive={activeTab === 'bookmarks'}
-                    onClick={() => onTabChange('bookmarks')}
+                    onClick={() => handleTabChange('bookmarks')}
                 >
                     Bookmarks
                 </Tab>
@@ -182,13 +188,18 @@ const Sidebar = ({
                         />
                     ))
                 ) : activeTab === 'search' ? (
-                    <SearchResults results={searchResults} onSelect={onFileSelect} />
+                    <SearchResults
+                        results={searchResults}
+                        onSelect={onSearchResultClick}
+                        searchQuery={searchQuery}
+                    />
                 ) : (
                     <div className="space-y-2">
                         {bookmarks.map((bookmark) => (
                             <div
                                 key={bookmark.timestamp}
-                                className="bg-white rounded-lg p-3 shadow-sm hover:bg-gray-50 group"
+                                className="bg-white rounded-lg p-3 shadow-sm hover:bg-gray-50 group cursor-pointer"
+                                onClick={() => onBookmarkClick(bookmark.pageNumber)}
                             >
                                 <div className="flex items-center justify-between mb-1">
                                     <div className="flex items-center gap-2">
@@ -196,19 +207,37 @@ const Sidebar = ({
                                         <span className="text-sm">Page {bookmark.pageNumber}</span>
                                     </div>
                                     <button
-                                        onClick={() => onBookmarkDelete?.(bookmark)}
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            onBookmarkDelete(bookmark);
+                                        }}
                                         className="opacity-0 group-hover:opacity-100 p-1 hover:bg-gray-100 rounded-full transition-opacity"
                                     >
                                         <X className="h-4 w-4 text-gray-400 hover:text-red-500" />
                                     </button>
                                 </div>
+                                {bookmark.title && (
+                                    <p className="text-sm font-medium text-gray-700 mb-1">
+                                        {bookmark.title}
+                                    </p>
+                                )}
                                 {bookmark.text && (
                                     <p className="text-sm text-gray-600 line-clamp-2">
                                         {bookmark.text}
                                     </p>
                                 )}
+                                {bookmark.note && (
+                                    <p className="text-xs text-gray-500 mt-1 italic">
+                                        {bookmark.note}
+                                    </p>
+                                )}
                             </div>
                         ))}
+                        {bookmarks.length === 0 && (
+                            <div className="text-center text-gray-500 p-4">
+                                No bookmarks yet
+                            </div>
+                        )}
                     </div>
                 )}
             </div>

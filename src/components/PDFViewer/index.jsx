@@ -40,6 +40,7 @@ const BookmarkStamp = ({ bookmark, onClick }) => {
 
 const PDFViewer = () => {
     const [pdfs, setPdfs] = useState([]);
+    const [pdfUrls, setPdfUrls] = useState(new Map());
     const [currentPdf, setCurrentPdf] = useState(null);
     const [numPages, setNumPages] = useState(null);
     const [error, setError] = useState(null);
@@ -55,16 +56,27 @@ const PDFViewer = () => {
     const [scale, setScale] = useState(1.0);
     const [isDocumentLoaded, setIsDocumentLoaded] = useState(false);
 
+    // Load PDFs on mount
     useEffect(() => {
         const loadPdfs = async () => {
             try {
                 setLoading(true);
                 const savedFiles = await getFiles();
-                const pdfWithUrls = savedFiles.map(pdf => ({
-                    ...pdf,
-                    url: URL.createObjectURL(new Blob([pdf.data], { type: 'application/pdf' })),
-                    bookmarks: pdf.bookmarks || []
-                }));
+                const urlMap = new Map();
+
+                const pdfWithUrls = savedFiles.map(pdf => {
+                    const blob = new Blob([pdf.data], { type: 'application/pdf' });
+                    const url = URL.createObjectURL(blob);
+                    urlMap.set(pdf.timestamp, url);
+
+                    return {
+                        ...pdf,
+                        url,
+                        bookmarks: pdf.bookmarks || []
+                    };
+                });
+
+                setPdfUrls(urlMap);
                 setPdfs(pdfWithUrls);
             } catch (err) {
                 console.error('Error loading PDFs:', err);
@@ -74,15 +86,15 @@ const PDFViewer = () => {
             }
         };
         loadPdfs();
-    }, []);
 
-    useEffect(() => {
+        // Cleanup function
         return () => {
-            pdfs.forEach(pdf => {
-                if (pdf.url) URL.revokeObjectURL(pdf.url);
+            setPdfUrls(currentUrls => {
+                currentUrls.forEach(url => URL.revokeObjectURL(url));
+                return new Map();
             });
         };
-    }, [pdfs]);
+    }, []);
 
     const handleFileUpload = async (event) => {
         const files = Array.from(event.target.files);
@@ -91,20 +103,24 @@ const PDFViewer = () => {
         for (const file of files) {
             try {
                 const arrayBuffer = await file.arrayBuffer();
+                const timestamp = Date.now();
                 const blob = new Blob([arrayBuffer], { type: 'application/pdf' });
                 const url = URL.createObjectURL(blob);
 
                 const newPdf = {
                     name: file.name,
                     data: arrayBuffer,
-                    timestamp: Date.now(),
-                    bookmarks: []
+                    timestamp,
+                    bookmarks: [],
+                    url
                 };
 
                 const success = await saveFile(newPdf);
                 if (success) {
-                    setPdfs(prev => [...prev, { ...newPdf, url }]);
+                    setPdfUrls(prev => new Map(prev).set(timestamp, url));
+                    setPdfs(prev => [...prev, newPdf]);
                 } else {
+                    URL.revokeObjectURL(url);
                     setError(`Failed to save ${file.name}`);
                 }
             } catch (err) {
@@ -129,35 +145,63 @@ const PDFViewer = () => {
             for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
                 const page = await pdfDoc.getPage(pageNum);
                 const textContent = await page.getTextContent();
-                const pageText = textContent.items.map(item => item.str).join(' ');
+                const viewport = page.getViewport({ scale: 1.0 });
+
+                let textItems = [];
+                let fullText = '';
+
+                textContent.items.forEach(item => {
+                    const itemLength = item.str.length;
+                    const startIndex = fullText.length;
+
+                    textItems.push({
+                        text: item.str,
+                        startIndex,
+                        endIndex: startIndex + itemLength,
+                        transform: item.transform,
+                        width: item.width,
+                        height: item.height,
+                        str: item.str
+                    });
+
+                    fullText += item.str + ' ';
+                });
 
                 const regex = new RegExp(query, 'gi');
                 let match;
-                let matchCount = 0;
-                const matches = new Set();
+                const matches = [];
 
-                while ((match = regex.exec(pageText)) !== null) {
-                    matchCount++;
-                    const start = Math.max(0, match.index - 50);
-                    const end = Math.min(pageText.length, match.index + match[0].length + 50);
+                while ((match = regex.exec(fullText)) !== null) {
+                    const matchPosition = match.index;
+                    const matchText = match[0];
 
-                    let contextStart = pageText.lastIndexOf('.', start);
-                    contextStart = contextStart === -1 ? start : contextStart + 1;
-                    let contextEnd = pageText.indexOf('.', end);
-                    contextEnd = contextEnd === -1 ? end : contextEnd + 1;
+                    const containingItem = textItems.find(item =>
+                        matchPosition >= item.startIndex &&
+                        matchPosition < item.endIndex
+                    );
 
-                    const contextText = pageText.substring(contextStart, contextEnd).trim();
-                    if (!matches.has(contextText)) {
-                        matches.add(contextText);
+                    if (containingItem) {
+                        matches.push({
+                            text: fullText.substring(
+                                Math.max(0, matchPosition - 40),
+                                Math.min(fullText.length, matchPosition + matchText.length + 40)
+                            ).trim(),
+                            matchText,
+                            position: {
+                                x: containingItem.transform[4],
+                                y: viewport.height - containingItem.transform[5],
+                                width: containingItem.width,
+                                height: containingItem.height
+                            }
+                        });
                     }
                 }
 
-                if (matchCount > 0) {
+                if (matches.length > 0) {
                     results.push({
                         pageNumber: pageNum,
-                        matches: Array.from(matches),
-                        matchCount,
-                        matchText: query
+                        matches,
+                        matchCount: matches.length
                     });
                 }
             }
@@ -171,6 +215,69 @@ const PDFViewer = () => {
             setError('Search failed. Please try again.');
         }
     }, [currentPdf]);
+
+    const navigateToSearchResult = useCallback((result) => {
+        if (!currentPdf || !isDocumentLoaded) return;
+
+        const pageNumber = result.pageNumber;
+        const position = result.matches[0]?.position;
+
+        setCurrentPage(pageNumber);
+
+        requestAnimationFrame(() => {
+            const pageContainer = document.querySelector(`[data-page-number="${pageNumber}"]`);
+            if (!pageContainer) return;
+
+            const pageCanvas = pageContainer.querySelector('canvas');
+            if (!pageCanvas) return;
+
+            // Create highlight element
+            const highlight = document.createElement('div');
+            highlight.className = 'search-highlight';
+
+            // Get the canvas dimensions and position
+            const canvasRect = pageCanvas.getBoundingClientRect();
+            const scale = canvasRect.width / pageCanvas.width;
+
+            if (position) {
+                const highlightStyle = {
+                    position: 'absolute',
+                    backgroundColor: 'rgba(255, 255, 0, 0.3)',
+                    border: '2px solid rgba(255, 200, 0, 0.5)',
+                    borderRadius: '2px',
+                    pointerEvents: 'none',
+                    transition: 'all 0.3s',
+                    zIndex: 1,
+                    left: `${position.x * scale}px`,
+                    top: `${position.y * scale}px`,
+                    width: `${position.width * scale}px`,
+                    height: `${position.height * scale}px`,
+                };
+
+                Object.assign(highlight.style, highlightStyle);
+
+                const highlightContainer = pageContainer.querySelector('.pdf-highlight-container');
+                if (highlightContainer) {
+                    highlightContainer.appendChild(highlight);
+
+                    pageContainer.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'center'
+                    });
+
+                    setTimeout(() => {
+                        highlight.style.opacity = '0';
+                        setTimeout(() => highlight.remove(), 500);
+                    }, 2000);
+                }
+            } else {
+                pageContainer.scrollIntoView({
+                    behavior: 'smooth',
+                    block: 'center'
+                });
+            }
+        });
+    }, [currentPdf, isDocumentLoaded]);
 
     const handleTextSelection = useCallback((event, pageNumber) => {
         const selection = window.getSelection();
@@ -253,40 +360,30 @@ const PDFViewer = () => {
         }
     }, [currentPdf]);
 
-    const navigateToPage = useCallback((pageNumber) => {
-        if (!currentPdf || !isDocumentLoaded) {
-            console.warn('PDF not ready for navigation');
-            return;
-        }
-
-        const targetPage = parseInt(pageNumber, 10);
-        if (isNaN(targetPage) || targetPage < 1 || targetPage > numPages) {
-            console.warn('Invalid page number:', pageNumber);
-            return;
-        }
-
-        setCurrentPage(targetPage);
-
-        requestAnimationFrame(() => {
-            const pageElement = document.querySelector(`[data-page-number="${targetPage}"]`);
-            if (pageElement) {
-                pageElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const handleFileDelete = async (pdf) => {
+        try {
+            const success = await deleteFile(pdf.timestamp);
+            if (success) {
+                const url = pdfUrls.get(pdf.timestamp);
+                if (url) {
+                    URL.revokeObjectURL(url);
+                    setPdfUrls(prev => {
+                        const newUrls = new Map(prev);
+                        newUrls.delete(pdf.timestamp);
+                        return newUrls;
+                    });
+                }
+                setPdfs(prev => prev.filter(p => p.timestamp !== pdf.timestamp));
+                if (currentPdf?.timestamp === pdf.timestamp) {
+                    setCurrentPdf(null);
+                }
             } else {
-                console.warn('Page element not found:', targetPage);
+                setError('Failed to delete file');
             }
-        });
-    }, [currentPdf, isDocumentLoaded, numPages]);
-
-    const handleSearchResultClick = useCallback((result) => {
-        if (!currentPdf || !isDocumentLoaded) return;
-        const pageNumber = typeof result === 'object' ? result.pageNumber : result;
-        navigateToPage(pageNumber);
-    }, [currentPdf, isDocumentLoaded, navigateToPage]);
-
-    const handleBookmarkClick = useCallback((pageNumber) => {
-        if (!currentPdf || !isDocumentLoaded) return;
-        navigateToPage(pageNumber);
-    }, [currentPdf, isDocumentLoaded, navigateToPage]);
+        } catch (err) {
+            setError('Failed to delete file');
+        }
+    };
 
     return (
         <div className="flex h-screen">
@@ -312,25 +409,16 @@ const PDFViewer = () => {
                         return newSet;
                     });
                 }}
-                onSearchResultClick={handleSearchResultClick}
-                onFileDelete={async (pdf) => {
-                    try {
-                        const success = await deleteFile(pdf.timestamp);
-                        if (success) {
-                            URL.revokeObjectURL(pdf.url);
-                            setPdfs(prev => prev.filter(p => p.timestamp !== pdf.timestamp));
-                            if (currentPdf?.timestamp === pdf.timestamp) {
-                                setCurrentPdf(null);
-                            }
-                        } else {
-                            setError('Failed to delete file');
-                        }
-                    } catch (err) {
-                        setError('Failed to delete file');
+                onSearchResultClick={navigateToSearchResult}
+                onFileDelete={handleFileDelete}
+                bookmarks={currentPdf?.bookmarks || []}
+                onBookmarkClick={(pageNumber) => {
+                    if (!currentPdf || !isDocumentLoaded) return;
+                    const pageElement = document.querySelector(`[data-page-number="${pageNumber}"]`);
+                    if (pageElement) {
+                        pageElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
                     }
                 }}
-                bookmarks={currentPdf?.bookmarks || []}
-                onBookmarkClick={handleBookmarkClick}
                 onBookmarkDelete={handleBookmarkDelete}
             />
 
@@ -358,7 +446,7 @@ const PDFViewer = () => {
 
                 {currentPdf ? (
                     <Document
-                        file={currentPdf.url}
+                        file={pdfUrls.get(currentPdf.timestamp)}
                         onLoadSuccess={({ numPages }) => {
                             setNumPages(numPages);
                             setIsDocumentLoaded(true);
@@ -376,26 +464,34 @@ const PDFViewer = () => {
                         }
                     >
                         <div className="max-w-5xl mx-auto w-full">
-                            {Array.from(new Array(numPages), (el, index) => (
+                            {Array.from(new Array(numPages || 0), (el, index) => (
                                 <div
                                     key={`page_container_${index + 1}`}
                                     className="relative mb-4 flex justify-center"
                                     onMouseUp={(e) => handleTextSelection(e, index + 1)}
                                     data-page-number={index + 1}
                                 >
-                                    <div className="relative">
+                                    <div className="relative inline-block">
                                         <Page
                                             pageNumber={index + 1}
                                             scale={scale}
                                             className="shadow-lg rounded-lg bg-white"
-                                            data-page-number={index + 1}
                                         />
-                                        {currentPdf.bookmarks?.filter(b => b.pageNumber === index + 1)
+                                        <div className="pdf-highlight-container absolute top-0 left-0 right-0 bottom-0">
+                                            {/* Search highlights will be inserted here */}
+                                        </div>
+                                        {currentPdf?.bookmarks?.filter(b => b.pageNumber === index + 1)
                                             .map((bookmark) => (
                                                 <BookmarkStamp
                                                     key={bookmark.timestamp}
                                                     bookmark={bookmark}
-                                                    onClick={() => navigateToPage(bookmark.pageNumber)}
+                                                    onClick={() => {
+                                                        if (!isDocumentLoaded) return;
+                                                        const pageElement = document.querySelector(`[data-page-number="${bookmark.pageNumber}"]`);
+                                                        if (pageElement) {
+                                                            pageElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                                        }
+                                                    }}
                                                 />
                                             ))}
                                         <div className="absolute bottom-2 right-2 bg-gray-800 text-white px-2 py-1 rounded text-sm opacity-75">
